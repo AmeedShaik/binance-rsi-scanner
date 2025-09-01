@@ -41,11 +41,13 @@ TIMEFRAMES = {
 # ==============================
 # FETCH OHLCV DATA FROM COINPAPRIKA
 # ==============================
+from datetime import datetime, timedelta
+
 @st.cache_data(ttl=300)
 def fetch_ohlcv(symbol: str, tf: str = "5m", limit: int = 200):
-    coin_id = COINS.get(symbol, "btc-bitcoin")  # default BTC
+    coin_id = COINS.get(symbol, "btc-bitcoin")  # fallback BTC
     end = datetime.utcnow()
-    start = end - timedelta(days=7)  # up to 7 days back for intraday
+    start = end - timedelta(days=7)  # up to 7 days history
     url = f"https://api.coinpaprika.com/v1/tickers/{coin_id}/historical"
     try:
         params = {
@@ -65,7 +67,7 @@ def fetch_ohlcv(symbol: str, tf: str = "5m", limit: int = 200):
         df["open"] = df["close"].shift(1).fillna(df["close"])
         df["high"] = df["close"].rolling(3).max().fillna(df["close"])
         df["low"] = df["close"].rolling(3).min().fillna(df["close"])
-        df["volume"] = df["volume"].fillna(0)
+        df["volume"] = df.get("volume", 0)
         return df.tail(limit)
     except Exception as e:
         st.error(f"Error fetching {symbol}: {e}")
