@@ -4,68 +4,75 @@ import pandas as pd
 import plotly.graph_objects as go
 import ta
 from streamlit_autorefresh import st_autorefresh
+from datetime import datetime, timedelta
 
 # ==============================
 # CONFIG
 # ==============================
-st.set_page_config(page_title="CoinGecko RSI & MACD Scanner", layout="wide")
-st.title("📊 CoinGecko RSI + MACD Scanner (Public API)")
+st.set_page_config(page_title="CoinPaprika RSI & MACD Scanner", layout="wide")
+st.title("📊 CoinPaprika RSI + MACD Scanner (Public API)")
 
 # Auto-refresh every 30s
 st_autorefresh(interval=30 * 1000, key="rsirefresh")
 
-# Timeframes mapping for CoinGecko
-TIMEFRAMES = {
-    "1m": {"days": "1", "interval": "minutely"},
-    "5m": {"days": "1", "interval": "5m"},
-    "15m": {"days": "1", "interval": "15m"},
-    "1h": {"days": "1", "interval": "hourly"},
-    "4h": {"days": "7", "interval": "hourly"},
-    "1d": {"days": "30", "interval": "daily"},
+# Supported coins (you can extend this list)
+COINS = {
+    "BTCUSDT": "btc-bitcoin",
+    "ETHUSDT": "eth-ethereum",
+    "BNBUSDT": "bnb-binance-coin",
+    "XRPUSDT": "xrp-xrp",
+    "SOLUSDT": "sol-solana",
+    "ADAUSDT": "ada-cardano",
+    "DOGEUSDT": "doge-dogecoin",
+    "MATICUSDT": "matic-polygon",
+    "LTCUSDT": "ltc-litecoin",
+    "DOTUSDT": "dot-polkadot",
 }
 
-# Coin mapping (you can extend this list)
-COINS = {
-    "BTCUSDT": "bitcoin",
-    "ETHUSDT": "ethereum",
-    "BNBUSDT": "binancecoin",
-    "XRPUSDT": "ripple",
-    "SOLUSDT": "solana",
-    "ADAUSDT": "cardano",
-    "DOGEUSDT": "dogecoin",
-    "MATICUSDT": "matic-network",
-    "LTCUSDT": "litecoin",
-    "DOTUSDT": "polkadot",
+# Timeframes mapping (CoinPaprika only supports fixed intervals)
+TIMEFRAMES = {
+    "5m": "5m",
+    "15m": "15m",
+    "1h": "1h",
+    "4h": "4h",
+    "1d": "1d"
 }
 
 # ==============================
-# FETCH OHLCV DATA FROM COINGECKO
+# FETCH OHLCV DATA FROM COINPAPRIKA
 # ==============================
 @st.cache_data(ttl=300)
 def fetch_ohlcv(symbol: str, tf: str = "5m", limit: int = 200):
-    coin_id = COINS.get(symbol, "bitcoin")  # fallback BTC
-    params = TIMEFRAMES.get(tf, TIMEFRAMES["5m"])
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    coin_id = COINS.get(symbol, "btc-bitcoin")  # default BTC
+    end = datetime.utcnow()
+    start = end - timedelta(days=7)  # up to 7 days back for intraday
+    url = f"https://api.coinpaprika.com/v1/tickers/{coin_id}/historical"
     try:
-        r = requests.get(url, params={"vs_currency": "usd", "days": params["days"], "interval": params["interval"]}, timeout=10)
+        params = {
+            "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "interval": tf
+        }
+        r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
-        prices = data.get("prices", [])
-        df = pd.DataFrame(prices, columns=["time", "close"])
-        df["time"] = pd.to_datetime(df["time"], unit="ms")
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df["time"] = pd.to_datetime(df["timestamp"])
+        df.rename(columns={"price": "close"}, inplace=True)
         df["close"] = pd.to_numeric(df["close"])
-        # Generate OHLC from close (approx since CoinGecko gives only prices, not true OHLCV)
         df["open"] = df["close"].shift(1).fillna(df["close"])
         df["high"] = df["close"].rolling(3).max().fillna(df["close"])
         df["low"] = df["close"].rolling(3).min().fillna(df["close"])
-        df["volume"] = 0
+        df["volume"] = df["volume"].fillna(0)
         return df.tail(limit)
     except Exception as e:
         st.error(f"Error fetching {symbol}: {e}")
         return pd.DataFrame()
 
 # ==============================
-# CALCULATE INDICATORS
+# INDICATORS
 # ==============================
 def add_indicators(df: pd.DataFrame):
     if df.empty:
@@ -89,12 +96,12 @@ def get_latest_rsi(symbol, interval="5m", limit=200):
 # ==============================
 st.sidebar.header("⚙️ Settings")
 limit = st.sidebar.slider("Candles to fetch", min_value=50, max_value=500, value=200)
-timeframe = st.sidebar.radio("Chart Timeframe", list(TIMEFRAMES.keys()), index=2, horizontal=True)
+timeframe = st.sidebar.radio("Chart Timeframe", list(TIMEFRAMES.keys()), index=0, horizontal=True)
 
 # ==============================
-# RSI SCANNER (CoinGecko, Auto-refresh 30s)
+# RSI SCANNER
 # ==============================
-st.sidebar.subheader("🔥 RSI Scanners (CoinGecko)")
+st.sidebar.subheader("🔥 RSI Scanners (CoinPaprika)")
 st.sidebar.write("Timeframe: ⏱️ 5m (auto-refresh every 30s)")
 
 rsi_above = []
@@ -150,7 +157,7 @@ if not chart_df.empty:
 
     fig = go.Figure()
 
-    # Candlestick (approx from CoinGecko closes)
+    # Candlestick
     fig.add_trace(go.Candlestick(
         x=chart_df["time"],
         open=chart_df["open"],
