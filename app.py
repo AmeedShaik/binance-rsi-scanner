@@ -17,16 +17,8 @@ st_autorefresh(interval=30 * 1000, key="rsirefresh")
 
 # Supported coins (you can extend this list)
 COINS = {
-    "BTCUSDT": "btc-bitcoin",
-    "ETHUSDT": "eth-ethereum",
-    "BNBUSDT": "bnb-binance-coin",
-    "XRPUSDT": "xrp-xrp",
-    "SOLUSDT": "sol-solana",
-    "ADAUSDT": "ada-cardano",
-    "DOGEUSDT": "doge-dogecoin",
-    "MATICUSDT": "matic-polygon",
-    "LTCUSDT": "ltc-litecoin",
-    "DOTUSDT": "dot-polkadot",
+    "BTCU": "btc-bitcoin",
+    "ETHU": "eth-ethereum",
 }
 
 # Timeframes mapping (CoinPaprika only supports fixed intervals)
