@@ -46,11 +46,20 @@ def fetch_ohlcv(symbol: str, tf: str = "5m", limit: int = 200):
         yf_symbol = COINS.get(symbol, "BTC-USD")
         params = TIMEFRAMES.get(tf, TIMEFRAMES["5m"])
         df = yf.download(tickers=yf_symbol, interval=params["interval"], period=params["period"])
+        if df.empty:
+            return pd.DataFrame()
         df = df.reset_index()
-        df.rename(columns={"Datetime": "time", "Open": "open", "High": "high",
-                           "Low": "low", "Close": "close", "Volume": "volume"}, inplace=True)
-        df = df.tail(limit)
-        return df
+        # Normalize column names
+        df.rename(columns={
+            "Datetime": "time",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume"
+        }, inplace=True)
+        df = df[["time", "open", "high", "low", "close", "volume"]]  # enforce schema
+        return df.tail(limit)
     except Exception as e:
         st.error(f"Error fetching {symbol}: {e}")
         return pd.DataFrame()
@@ -59,7 +68,9 @@ def fetch_ohlcv(symbol: str, tf: str = "5m", limit: int = 200):
 # INDICATORS
 # ==============================
 def add_indicators(df: pd.DataFrame):
-    if df.empty:
+    if df.empty or "close" not in df.columns:
+        return df
+    if df["close"].nunique() == 1:  # avoid flat series
         return df
     df["RSI"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
     macd = ta.trend.MACD(df["close"])
@@ -70,10 +81,10 @@ def add_indicators(df: pd.DataFrame):
 
 def get_latest_rsi(symbol, interval="5m", limit=200):
     df = fetch_ohlcv(symbol, interval, limit)
-    if df.empty:
+    if df.empty or "close" not in df.columns or df["close"].nunique() == 1:
         return None
-    df["RSI"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-    return round(df["RSI"].iloc[-1], 2)
+    rsi = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+    return round(rsi.iloc[-1], 2)
 
 # ==============================
 # SIDEBAR SETTINGS
@@ -157,24 +168,26 @@ if not chart_df.empty:
                   annotation_text=f"Price: {latest_price}", annotation_position="top right", yref="y1")
 
     # RSI
-    fig.add_trace(go.Scatter(
-        x=chart_df["time"], y=chart_df["RSI"],
-        mode="lines", name="RSI", yaxis="y2"
-    ))
+    if "RSI" in chart_df:
+        fig.add_trace(go.Scatter(
+            x=chart_df["time"], y=chart_df["RSI"],
+            mode="lines", name="RSI", yaxis="y2"
+        ))
 
     # MACD
-    fig.add_trace(go.Scatter(
-        x=chart_df["time"], y=chart_df["MACD"],
-        mode="lines", name="MACD", yaxis="y3", line=dict(color="blue")
-    ))
-    fig.add_trace(go.Scatter(
-        x=chart_df["time"], y=chart_df["MACD_Signal"],
-        mode="lines", name="Signal", yaxis="y3", line=dict(color="red")
-    ))
-    fig.add_trace(go.Bar(
-        x=chart_df["time"], y=chart_df["MACD_Hist"],
-        name="Histogram", yaxis="y3", marker_color="gray"
-    ))
+    if "MACD" in chart_df:
+        fig.add_trace(go.Scatter(
+            x=chart_df["time"], y=chart_df["MACD"],
+            mode="lines", name="MACD", yaxis="y3", line=dict(color="blue")
+        ))
+        fig.add_trace(go.Scatter(
+            x=chart_df["time"], y=chart_df["MACD_Signal"],
+            mode="lines", name="Signal", yaxis="y3", line=dict(color="red")
+        ))
+        fig.add_trace(go.Bar(
+            x=chart_df["time"], y=chart_df["MACD_Hist"],
+            name="Histogram", yaxis="y3", marker_color="gray"
+        ))
 
     # Layout
     fig.update_layout(
@@ -191,3 +204,5 @@ if not chart_df.empty:
     fig.add_hline(y=30, line_dash="dash", line_color="green", yref="y2")
 
     st.plotly_chart(fig, use_container_width=True)
+else:
+    st.warning(f"No data available for {selected_symbol} on {timeframe}")
