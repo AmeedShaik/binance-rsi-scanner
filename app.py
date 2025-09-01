@@ -9,21 +9,13 @@ from streamlit_autorefresh import st_autorefresh
 # CONFIG
 # ==============================
 st.set_page_config(page_title="Binance RSI & MACD Scanner", layout="wide")
-st.title("📊 Binance RSI + MACD Scanner")
+st.title("📊 Binance RSI + MACD Scanner (Public Mode)")
 
 # Auto-refresh every 30s
 st_autorefresh(interval=30 * 1000, key="rsirefresh")
 
-# Load Binance API keys from Streamlit Secrets
-try:
-    API_KEY = st.secrets["BINANCE_API_KEY"]
-    API_SECRET = st.secrets["BINANCE_SECRET_KEY"]
-except Exception as e:
-    st.error("❌ Binance API keys not found. Please set them in Streamlit Cloud → Settings → Secrets.")
-    st.stop()
-
-# Binance client
-client = Client(API_KEY, API_SECRET)
+# Binance client in PUBLIC mode (no API keys needed)
+client = Client()
 
 TIMEFRAMES = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
 
@@ -101,7 +93,7 @@ all_symbols = fetch_all_usdt_pairs()
 rsi_above = []
 rsi_below = []
 
-MAX_COINS = 100  # limit to avoid long scans
+MAX_COINS = 100  # limit to avoid timeouts
 symbols_to_scan = all_symbols[:MAX_COINS]
 
 progress_bar = st.sidebar.progress(0)
