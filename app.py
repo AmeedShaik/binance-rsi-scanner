@@ -113,7 +113,7 @@ else:
 # ==============================
 @st.cache_data(ttl=600)
 def fetch_all_usdt_pairs():
-    url = "https://api.binance.us/api/v3/exchangeInfo"
+    url = "https://api.binance.us/api/v3"
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
