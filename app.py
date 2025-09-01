@@ -1,66 +1,56 @@
 import streamlit as st
-import requests
+import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import ta
 from streamlit_autorefresh import st_autorefresh
-from datetime import datetime, timedelta
 
 # ==============================
 # CONFIG
 # ==============================
-st.set_page_config(page_title="CoinPaprika RSI & MACD Scanner", layout="wide")
-st.title("📊 CoinPaprika RSI + MACD Scanner (Public API)")
+st.set_page_config(page_title="Yahoo Finance RSI & MACD Scanner", layout="wide")
+st.title("📊 Yahoo Finance RSI + MACD Scanner")
 
 # Auto-refresh every 30s
 st_autorefresh(interval=30 * 1000, key="rsirefresh")
 
-# Supported coins (you can extend this list)
+# Watchlist mapping (USDT pairs → Yahoo Finance tickers)
 COINS = {
-    "BTCU": "btc-bitcoin",
-    "ETHU": "eth-ethereum",
+    "BTCUSDT": "BTC-USD",
+    "ETHUSDT": "ETH-USD",
+    "BNBUSDT": "BNB-USD",
+    "XRPUSDT": "XRP-USD",
+    "SOLUSDT": "SOL-USD",
+    "ADAUSDT": "ADA-USD",
+    "DOGEUSDT": "DOGE-USD",
+    "MATICUSDT": "MATIC-USD",
+    "LTCUSDT": "LTC-USD",
+    "DOTUSDT": "DOT-USD",
 }
 
-# Timeframes mapping (CoinPaprika only supports fixed intervals)
+# Yahoo Finance supported intervals
 TIMEFRAMES = {
-    "5m": "5m",
-    "15m": "15m",
-    "1h": "1h",
-    "4h": "4h",
-    "1d": "1d"
+    "1m": {"interval": "1m", "period": "1d"},
+    "5m": {"interval": "5m", "period": "7d"},
+    "15m": {"interval": "15m", "period": "60d"},
+    "1h": {"interval": "1h", "period": "730d"},
+    "1d": {"interval": "1d", "period": "max"},
 }
 
 # ==============================
-# FETCH OHLCV DATA FROM COINPAPRIKA
+# FETCH OHLCV DATA
 # ==============================
-from datetime import datetime, timedelta
-
 @st.cache_data(ttl=300)
 def fetch_ohlcv(symbol: str, tf: str = "5m", limit: int = 200):
-    coin_id = COINS.get(symbol, "btc-bitcoin")  # fallback BTC
-    end = datetime.utcnow()
-    start = end - timedelta(days=7)  # up to 7 days history
-    url = f"https://api.coinpaprika.com/v1/tickers/{coin_id}/historical"
     try:
-        params = {
-            "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "interval": tf
-        }
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data)
-        df["time"] = pd.to_datetime(df["timestamp"])
-        df.rename(columns={"price": "close"}, inplace=True)
-        df["close"] = pd.to_numeric(df["close"])
-        df["open"] = df["close"].shift(1).fillna(df["close"])
-        df["high"] = df["close"].rolling(3).max().fillna(df["close"])
-        df["low"] = df["close"].rolling(3).min().fillna(df["close"])
-        df["volume"] = df.get("volume", 0)
-        return df.tail(limit)
+        yf_symbol = COINS.get(symbol, "BTC-USD")
+        params = TIMEFRAMES.get(tf, TIMEFRAMES["5m"])
+        df = yf.download(tickers=yf_symbol, interval=params["interval"], period=params["period"])
+        df = df.reset_index()
+        df.rename(columns={"Datetime": "time", "Open": "open", "High": "high",
+                           "Low": "low", "Close": "close", "Volume": "volume"}, inplace=True)
+        df = df.tail(limit)
+        return df
     except Exception as e:
         st.error(f"Error fetching {symbol}: {e}")
         return pd.DataFrame()
@@ -90,12 +80,12 @@ def get_latest_rsi(symbol, interval="5m", limit=200):
 # ==============================
 st.sidebar.header("⚙️ Settings")
 limit = st.sidebar.slider("Candles to fetch", min_value=50, max_value=500, value=200)
-timeframe = st.sidebar.radio("Chart Timeframe", list(TIMEFRAMES.keys()), index=0, horizontal=True)
+timeframe = st.sidebar.radio("Chart Timeframe", list(TIMEFRAMES.keys()), index=1, horizontal=True)
 
 # ==============================
 # RSI SCANNER
 # ==============================
-st.sidebar.subheader("🔥 RSI Scanners (CoinPaprika)")
+st.sidebar.subheader("🔥 RSI Scanners (Yahoo Finance)")
 st.sidebar.write("Timeframe: ⏱️ 5m (auto-refresh every 30s)")
 
 rsi_above = []
@@ -139,7 +129,7 @@ else:
     selected_symbol = selected_from_scanner
 
 # ==============================
-# MAIN CHART AREA
+# MAIN CHART
 # ==============================
 chart_df = fetch_ohlcv(selected_symbol, timeframe, limit)
 chart_df = add_indicators(chart_df)
