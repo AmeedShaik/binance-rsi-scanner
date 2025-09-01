@@ -1,21 +1,22 @@
 import streamlit as st
+import requests
 import pandas as pd
 import plotly.graph_objects as go
 import ta
-from binance.client import Client
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
 # CONFIG
 # ==============================
 st.set_page_config(page_title="Binance RSI & MACD Scanner", layout="wide")
-st.title("📊 Binance RSI + MACD Scanner (Public Mode)")
+st.title("📊 Binance RSI + MACD Scanner (Public REST API)")
 
 # Auto-refresh every 30s
 st_autorefresh(interval=30 * 1000, key="rsirefresh")
 
-# Binance client in PUBLIC mode (no API keys needed)
-client = Client()
+BINANCE_BASE = "https://api.binance.com/api/v3"
+BINANCE_KLINES = f"{BINANCE_BASE}/klines"
+BINANCE_EXCHANGE_INFO = f"{BINANCE_BASE}/exchangeInfo"
 
 TIMEFRAMES = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
 
@@ -25,8 +26,10 @@ TIMEFRAMES = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d"
 @st.cache_data(ttl=600)
 def fetch_all_usdt_pairs():
     try:
-        exchange_info = client.get_exchange_info()
-        symbols = [s["symbol"] for s in exchange_info["symbols"]
+        r = requests.get(BINANCE_EXCHANGE_INFO, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        symbols = [s["symbol"] for s in data["symbols"]
                    if s["status"] == "TRADING" and s["symbol"].endswith("USDT")]
         return symbols
     except Exception as e:
@@ -39,8 +42,11 @@ def fetch_all_usdt_pairs():
 @st.cache_data(ttl=300)
 def fetch_ohlcv(symbol: str, interval: str = "5m", limit: int = 200):
     try:
-        klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-        df = pd.DataFrame(klines, columns=[
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        r = requests.get(BINANCE_KLINES, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        df = pd.DataFrame(data, columns=[
             "time","open","high","low","close","volume",
             "close_time","qav","trades","taker_base","taker_quote","ignore"
         ])
