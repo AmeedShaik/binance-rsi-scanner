@@ -17,9 +17,11 @@ st_autorefresh(interval=30 * 1000, key="rsirefresh")
 # Load Binance API keys from Streamlit Secrets
 BINANCE_API_KEY = "hiRwj5vxj1z9i1VgaSWWREriRj42gKjXZ3ywIUOM3ayS8XpH0O6apdBBGdzBFsHP"
 BINANCE_SECRET_KEY = "RddHmZfMl0RXENb4oILAEXbsmd51jl4LtucvoVKZGHphTUsN6VHMa9PbcfQSSEQM"
-except Exception:
+except Exception as e:
     st.error("❌ Binance API keys not found. Please set them in Streamlit Cloud → Settings → Secrets.")
     st.stop()
+
+# Create Binance client
 client = Client(API_KEY, API_SECRET)
 
 TIMEFRAMES = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
