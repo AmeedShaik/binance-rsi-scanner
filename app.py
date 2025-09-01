@@ -113,17 +113,23 @@ else:
 # ==============================
 @st.cache_data(ttl=600)
 def fetch_all_usdt_pairs():
-    url = "https://api.binance.com/api/v3/exchangeInfo"
-    try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        # Only USDT pairs, trading status must be TRADING
-        symbols = [s["symbol"] for s in data["symbols"] if s["status"] == "TRADING" and s["symbol"].endswith("USDT")]
-        return symbols
-    except Exception as e:
-        st.error(f"Error fetching symbols: {e}")
-        return WATCHLIST  # fallback
+    urls = [
+        "https://api1.binance.com/api/v3/exchangeInfo",
+        "https://api2.binance.com/api/v3/exchangeInfo",
+        "https://api3.binance.com/api/v3/exchangeInfo"
+    ]
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            # Only USDT pairs, trading status must be TRADING
+            symbols = [s["symbol"] for s in data["symbols"] 
+                       if s["status"] == "TRADING" and s["symbol"].endswith("USDT")]
+            return symbols
+        except Exception as e:
+            st.warning(f"Failed with {url}: {e}")
+    return WATCHLIST  # fallback
 
 from streamlit_autorefresh import st_autorefresh
 
