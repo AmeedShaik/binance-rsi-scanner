@@ -8,55 +8,58 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================
 # CONFIG
 # ==============================
-st.set_page_config(page_title="Binance RSI & MACD Scanner", layout="wide")
-st.title("📊 Binance RSI + MACD Scanner (Public REST API)")
+st.set_page_config(page_title="CoinGecko RSI & MACD Scanner", layout="wide")
+st.title("📊 CoinGecko RSI + MACD Scanner (Public API)")
 
 # Auto-refresh every 30s
 st_autorefresh(interval=30 * 1000, key="rsirefresh")
 
-BINANCE_BASE = "https://api.binance.com/api/v3"
-BINANCE_KLINES = f"{BINANCE_BASE}/klines"
-BINANCE_EXCHANGE_INFO = f"{BINANCE_BASE}/exchangeInfo"
+# Timeframes mapping for CoinGecko
+TIMEFRAMES = {
+    "1m": {"days": "1", "interval": "minutely"},
+    "5m": {"days": "1", "interval": "5m"},
+    "15m": {"days": "1", "interval": "15m"},
+    "1h": {"days": "1", "interval": "hourly"},
+    "4h": {"days": "7", "interval": "hourly"},
+    "1d": {"days": "30", "interval": "daily"},
+}
 
-TIMEFRAMES = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
+# Coin mapping (you can extend this list)
+COINS = {
+    "BTCUSDT": "bitcoin",
+    "ETHUSDT": "ethereum",
+    "BNBUSDT": "binancecoin",
+    "XRPUSDT": "ripple",
+    "SOLUSDT": "solana",
+    "ADAUSDT": "cardano",
+    "DOGEUSDT": "dogecoin",
+    "MATICUSDT": "matic-network",
+    "LTCUSDT": "litecoin",
+    "DOTUSDT": "polkadot",
+}
 
 # ==============================
-# FETCH ALL USDT PAIRS
-# ==============================
-@st.cache_data(ttl=600)
-def fetch_all_usdt_pairs():
-    try:
-        r = requests.get(BINANCE_EXCHANGE_INFO, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        symbols = [s["symbol"] for s in data["symbols"]
-                   if s["status"] == "TRADING" and s["symbol"].endswith("USDT")]
-        return symbols
-    except Exception as e:
-        st.error(f"Error fetching symbols: {e}")
-        return ["BTCUSDT", "ETHUSDT"]
-
-# ==============================
-# FETCH OHLCV DATA
+# FETCH OHLCV DATA FROM COINGECKO
 # ==============================
 @st.cache_data(ttl=300)
-def fetch_ohlcv(symbol: str, interval: str = "5m", limit: int = 200):
+def fetch_ohlcv(symbol: str, tf: str = "5m", limit: int = 200):
+    coin_id = COINS.get(symbol, "bitcoin")  # fallback BTC
+    params = TIMEFRAMES.get(tf, TIMEFRAMES["5m"])
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     try:
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
-        r = requests.get(BINANCE_KLINES, params=params, timeout=10)
+        r = requests.get(url, params={"vs_currency": "usd", "days": params["days"], "interval": params["interval"]}, timeout=10)
         r.raise_for_status()
         data = r.json()
-        df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "close_time","qav","trades","taker_base","taker_quote","ignore"
-        ])
+        prices = data.get("prices", [])
+        df = pd.DataFrame(prices, columns=["time", "close"])
         df["time"] = pd.to_datetime(df["time"], unit="ms")
-        df["open"] = pd.to_numeric(df["open"])
-        df["high"] = pd.to_numeric(df["high"])
-        df["low"] = pd.to_numeric(df["low"])
         df["close"] = pd.to_numeric(df["close"])
-        df["volume"] = pd.to_numeric(df["volume"])
-        return df
+        # Generate OHLC from close (approx since CoinGecko gives only prices, not true OHLCV)
+        df["open"] = df["close"].shift(1).fillna(df["close"])
+        df["high"] = df["close"].rolling(3).max().fillna(df["close"])
+        df["low"] = df["close"].rolling(3).min().fillna(df["close"])
+        df["volume"] = 0
+        return df.tail(limit)
     except Exception as e:
         st.error(f"Error fetching {symbol}: {e}")
         return pd.DataFrame()
@@ -89,29 +92,21 @@ limit = st.sidebar.slider("Candles to fetch", min_value=50, max_value=500, value
 timeframe = st.sidebar.radio("Chart Timeframe", list(TIMEFRAMES.keys()), index=2, horizontal=True)
 
 # ==============================
-# RSI SCANNER (All USDT Pairs, 5m TF, Auto-refresh 30s)
+# RSI SCANNER (CoinGecko, Auto-refresh 30s)
 # ==============================
-st.sidebar.subheader("🔥 RSI Scanners (All USDT Pairs)")
+st.sidebar.subheader("🔥 RSI Scanners (CoinGecko)")
 st.sidebar.write("Timeframe: ⏱️ 5m (auto-refresh every 30s)")
-
-all_symbols = fetch_all_usdt_pairs()
 
 rsi_above = []
 rsi_below = []
 
-MAX_COINS = 100  # limit to avoid timeouts
-symbols_to_scan = all_symbols[:MAX_COINS]
-
-progress_bar = st.sidebar.progress(0)
-for i, sym in enumerate(symbols_to_scan):
+for sym in COINS.keys():
     rsi_val = get_latest_rsi(sym, "5m", limit)
     if rsi_val:
         if rsi_val > 70:
             rsi_above.append({"Symbol": sym, "RSI": rsi_val})
         elif rsi_val < 30:
             rsi_below.append({"Symbol": sym, "RSI": rsi_val})
-    progress_bar.progress((i + 1) / len(symbols_to_scan))
-progress_bar.empty()
 
 selected_from_scanner = None
 
@@ -145,7 +140,7 @@ else:
 # ==============================
 # MAIN CHART AREA
 # ==============================
-chart_df = fetch_ohlcv(selected_symbol, TIMEFRAMES[timeframe], limit)
+chart_df = fetch_ohlcv(selected_symbol, timeframe, limit)
 chart_df = add_indicators(chart_df)
 
 if not chart_df.empty:
@@ -155,7 +150,7 @@ if not chart_df.empty:
 
     fig = go.Figure()
 
-    # Candlestick
+    # Candlestick (approx from CoinGecko closes)
     fig.add_trace(go.Candlestick(
         x=chart_df["time"],
         open=chart_df["open"],
