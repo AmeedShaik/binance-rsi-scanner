@@ -2,3 +2,5 @@ streamlit
 python-binance
 pandas
 plotly
+websocket-client   # for WebSocket handling (python-binance uses this)
+requests           # for API calls
