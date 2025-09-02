@@ -1,7 +1,4 @@
 streamlit
-streamlit-autorefresh
+python-binance
 pandas
-requests
 plotly
-ta
-yfinance
