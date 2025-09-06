@@ -1,154 +1,183 @@
-""" Patched app file for binance-rsi-scanner
+# streamlit_btc_ui.py
+import time
+import io
+import requests
+import pandas as pd
+import streamlit as st
+from datetime import datetime
+from textwrap import dedent
 
-This file contains:
-
-fetch_klines_with_fallback(...) that tries authenticated python-binance, falls back to Binance public REST, then CoinGecko (BTC only) if needed.
-
-A small Streamlit-based UI that demonstrates usage and shows which data source is being used. It also calculates a simple RSI for demonstration.
-
-
-HOW TO USE:
-
-1. Replace your current kline-fetching logic with from app_patched import fetch_klines_with_fallback or copy the fetch_klines_with_fallback and klines_to_df functions directly into your existing app.py.
-
-
-2. Keep your existing trading logic separate. This patched file is intentionally minimal so it won't overwrite your full trading code.
-
-
-
-Note: Do NOT hardcode real API keys into code. Use environment variables or Streamlit secrets. """
-
-import os import time import traceback import requests import pandas as pd
-
-try importing python-binance but allow running without it
-
-try: from binance.client import Client from binance.exceptions import BinanceAPIException _HAS_BINANCE = True except Exception: Client = None BinanceAPIException = Exception _HAS_BINANCE = False
-
---------- KLINES + FALLBACK HELPERS ---------
-
-def klines_to_df(klines): """Convert Binance-style kline list to DataFrame.""" cols = [ "open_time","open","high","low","close","volume","close_time", "qav","num_trades","taker_base_vol","taker_quote_vol","ignore" ] df = pd.DataFrame(klines, columns=cols) # convert timestamps if not df.empty: df["open_time"] = pd.to_datetime(df["open_time"], unit="ms") try: df["close_time"] = pd.to_datetime(df["close_time"], unit="ms") except Exception: pass for c in ["open","high","low","close","volume"]: if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce") return df
-
-def fetch_klines_with_fallback(symbol="BTCUSDT", interval="1h", limit=500, api_key=None, api_secret=None, verbose=True): """ Attempt order of data sources: 1) Authenticated python-binance client (if keys provided and python-binance installed) 2) Binance public REST (no auth) 3) CoinGecko OHLC (BTC only, limited intervals)
-
-Returns: (df, source_str)
-"""
-# 1) try authenticated python-binance client
-if api_key and api_secret and _HAS_BINANCE:
-    try:
-        client = Client(api_key, api_secret)
-        kl = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-        df = klines_to_df(kl)
-        if verbose:
-            print("Using binance-auth (authenticated python-binance)")
-        return df, "binance-auth"
-    except BinanceAPIException as e:
-        txt = str(e)
-        if verbose:
-            print("BinanceAPIException when using authenticated client:", txt)
-        # specifically detect the restricted-location message
-        if "restricted location" in txt.lower() or "service unavailable from a restricted location" in txt.lower():
-            if verbose:
-                print("Detected restricted location error. Falling back to public endpoints.")
-        # fall through to public
-    except Exception as e:
-        if verbose:
-            print("Error using authenticated client:", e)
-            traceback.print_exc()
-        # fall through
-
-# 2) public Binance REST
+# Try import ccxt (optional)
 try:
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    r = requests.get(url, params=params, timeout=10)
+    import ccxt
+    _HAS_CCXT = True
+except Exception:
+    ccxt = None
+    _HAS_CCXT = False
+
+# ---------- Helpers: resilient fetcher (ccxt tries, then CoinGecko) ----------
+def fetch_ohlcv_via_ccxt(exchange_id, symbol_variants, timeframe="1h", limit=200):
+    last_exc = None
+    if not _HAS_CCXT:
+        raise RuntimeError("ccxt not installed")
+    if not hasattr(ccxt, exchange_id):
+        raise AttributeError(f"ccxt has no exchange named '{exchange_id}'")
+    Exch = getattr(ccxt, exchange_id)
+    ex = Exch({"enableRateLimit": True})
+    ex.timeout = 30000
+    for sym in symbol_variants:
+        try:
+            ohlcv = ex.fetch_ohlcv(sym, timeframe=timeframe, limit=limit)
+            df = pd.DataFrame(ohlcv, columns=["timestamp","open","high","low","close","volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            return df
+        except Exception as e:
+            last_exc = e
+            # continue trying others
+            time.sleep(0.15)
+    raise last_exc
+
+def fetch_btc_ohlcv_resilient(timeframe="1h", limit=200, try_exchanges=None):
+    if try_exchanges is None:
+        try_exchanges = [
+            "kraken", "bitstamp", "bitfinex", "coinbasepro", "coinbase", "gemini",
+            "huobipro", "okx", "kucoin", "gate", "mexc", "whitebit"
+        ]
+    common_variants = ["BTC/USDT", "BTC/USD", "BTC/USDT:USDT", "BTC/USDT:USD"]
+    if _HAS_CCXT:
+        for exch in try_exchanges:
+            try:
+                if not hasattr(ccxt, exch):
+                    continue
+                variants = common_variants.copy()
+                if exch in ("coinbasepro", "coinbase", "gemini"):
+                    variants = ["BTC/USD", "BTC-USD", "BTC/USDT"]
+                if exch == "kraken":
+                    variants = ["BTC/USD", "XBT/USD", "BTC/USDT"]
+                if exch == "bitfinex":
+                    variants = ["BTC/USD", "BTC/USDT", "tBTCUSD"]
+                df = fetch_ohlcv_via_ccxt(exch, variants, timeframe=timeframe, limit=limit)
+                return df, f"ccxt:{exch}"
+            except Exception as e:
+                # log and continue
+                st.write(f"Exchange {exch} failed: {repr(e)}")
+                continue
+    # Fallback to CoinGecko
+    df = fetch_btc_ohlcv_coingecko(timeframe=timeframe, limit=limit)
+    return df, "coingecko"
+
+def fetch_btc_ohlcv_coingecko(timeframe="1h", limit=200, days=7):
+    tf_to_mins = {"1m":1, "5m":5, "15m":15, "30m":30, "1h":60, "4h":240, "1d":1440}
+    if timeframe not in tf_to_mins:
+        raise ValueError("Unsupported timeframe for CoinGecko fallback")
+    minutes = tf_to_mins[timeframe]
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+    params = {"vs_currency":"usd", "days": days}
+    r = requests.get(url, params=params, timeout=20)
     r.raise_for_status()
-    kl = r.json()
-    df = klines_to_df(kl)
-    if verbose:
-        print("Using binance-public (public REST)")
-    return df, "binance-public"
-except Exception as e:
-    if verbose:
-        print("Public Binance klines failed:", e)
-        traceback.print_exc()
+    js = r.json()
+    prices = js.get("prices", [])
+    if not prices:
+        raise RuntimeError("CoinGecko returned no prices")
+    pdf = pd.DataFrame(prices, columns=["timestamp_ms","price"])
+    pdf["timestamp"] = pd.to_datetime(pdf["timestamp_ms"], unit="ms")
+    pdf = pdf.set_index("timestamp").drop(columns=["timestamp_ms"])
+    ohlc = pdf["price"].resample(f"{minutes}T").ohlc().dropna()
+    ohlc["volume"] = None
+    ohlc = ohlc.reset_index().rename(columns={"open":"open","high":"high","low":"low","close":"close"})
+    if len(ohlc) > limit:
+        ohlc = ohlc.tail(limit).reset_index(drop=True)
+    return ohlc
 
-# 3) CoinGecko fallback for BTC only (limited precision/intervals)
-try:
-    if symbol.upper().startswith("BTC"):
-        cg_url = "https://api.coingecko.com/api/v3/coins/bitcoin/ohlc"
-        # CoinGecko days param: 1/7/14/30/90/180/365/max
-        days = 30
-        r = requests.get(cg_url, params={"vs_currency":"usd","days":days}, timeout=10)
-        r.raise_for_status()
-        data = r.json()  # [ [timestamp, open, high, low, close], ...]
-        df = pd.DataFrame(data, columns=["open_time","open","high","low","close"])
-        df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-        df["volume"] = None
-        if verbose:
-            print("Using coingecko fallback (BTC OHLC)")
-        return df, "coingecko"
-except Exception as e:
-    if verbose:
-        print("CoinGecko fallback failed:", e)
-        traceback.print_exc()
+# ---------- Small RSI util ----------
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    up = delta.clip(lower=0)
+    down = -1 * delta.clip(upper=0)
+    ma_up = up.ewm(com=(period - 1), adjust=False).mean()
+    ma_down = down.ewm(com=(period - 1), adjust=False).mean()
+    rs = ma_up / ma_down
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-raise RuntimeError("Failed to fetch klines from Binance (auth/public) and CoinGecko fallback.")
+# ---------- Streamlit UI ----------
+st.set_page_config(page_title="BTC OHLC Viewer", layout="wide")
+st.title("BTC OHLC Viewer — resilient data source + RSI")
 
---------- SMALL RSI UTIL (for demo) ---------
+with st.sidebar:
+    st.header("Fetch settings")
+    timeframe = st.selectbox("Timeframe", ["1m","5m","15m","30m","1h","4h","1d"], index=4)
+    limit = st.number_input("Candles (limit)", min_value=10, max_value=2000, value=200, step=10)
+    days = st.number_input("CoinGecko days (for fallback)", min_value=1, max_value=365, value=7)
+    st.markdown("---")
+    st.write("Optional: enable ccxt (if installed) to try exchange-accurate candles.")
+    if _HAS_CCXT:
+        st.success("ccxt is available")
+    else:
+        st.warning("ccxt not installed — app will use CoinGecko fallback only")
 
-def compute_rsi(series, period=14): """Compute RSI for a pandas Series of prices.""" delta = series.diff() up = delta.clip(lower=0) down = -1 * delta.clip(upper=0) ma_up = up.ewm(com=(period - 1), adjust=False).mean() ma_down = down.ewm(com=(period - 1), adjust=False).mean() rs = ma_up / ma_down rsi = 100 - (100 / (1 + rs)) return rsi
-
---------- STREAMLIT DEMO APP (optional) ---------
-
-This block provides a simple UI to test the fallback. If you already have
-
-a full Streamlit app, copy the fetch_klines_with_fallback and compute_rsi
-
-functions into it instead of running this demo.
-
-if name == "main": # If run as a script, start a minimal Streamlit app try: import streamlit as st except Exception: raise RuntimeError("streamlit is required to run the demo. Install with: pip install streamlit")
-
-st.set_page_config(page_title="Binance RSI Scanner - Fallback Demo", layout="wide")
-
-st.title("Binance RSI Scanner — Fallback-enabled demo")
-col1, col2 = st.columns([2,1])
+col1, col2 = st.columns([3,1])
 
 with col1:
-    symbol = st.text_input("Symbol (e.g. BTCUSDT)", value="BTCUSDT")
-    interval = st.selectbox("Interval", ["1m","5m","15m","1h","4h","1d"], index=3)
-    limit = st.number_input("Klines limit", min_value=10, max_value=1000, value=200)
-
-    st.write("---")
-    st.write("**API Keys (optional)** — leave blank to use public data only")
-    bin_key = st.text_input("BINANCE_API_KEY", type="password")
-    bin_secret = st.text_input("BINANCE_SECRET", type="password")
-
-    if st.button("Fetch and compute RSI"):
-        with st.spinner("Fetching klines..."):
+    symbol_label = st.text_input("Symbol (display only)", value="BTC")
+    if st.button("Fetch BTC data"):
+        with st.spinner("Fetching data..."):
             try:
-                api_key = bin_key.strip() or None
-                api_secret = bin_secret.strip() or None
-                df, source = fetch_klines_with_fallback(symbol, interval, limit, api_key, api_secret, verbose=False)
+                df, source = fetch_btc_ohlcv_resilient(timeframe=timeframe, limit=limit, try_exchanges=None)
                 st.success(f"Data source: {source}")
-
-                if df is None or df.empty:
-                    st.warning("No data returned.")
-                else:
-                    # compute RSI if close exists
-                    if "close" in df.columns:
-                        df["rsi"] = compute_rsi(df["close"].astype(float))
-                        st.dataframe(df[["open_time","open","high","low","close","rsi"]].tail(100))
-                    else:
-                        st.dataframe(df.tail(50))
+                # normalize columns: coinGecko returns lowercase timestamps for index -> ensure 'timestamp' col
+                if "timestamp" in df.columns:
+                    df = df.rename(columns={"timestamp": "open_time"})
+                if "open_time" not in df.columns:
+                    # try to detect time col
+                    possible_time_cols = [c for c in df.columns if "time" in c.lower() or c.lower() == "timestamp"]
+                    if possible_time_cols:
+                        df = df.rename(columns={possible_time_cols[0]: "open_time"})
+                df["open_time"] = pd.to_datetime(df["open_time"])
+                df = df.sort_values("open_time").reset_index(drop=True)
+                # Ensure numeric types
+                for c in ["open","high","low","close","volume"]:
+                    if c in df.columns:
+                        df[c] = pd.to_numeric(df[c], errors="coerce")
+                # Show table
+                st.dataframe(df.tail(100))
+                # Plot candlestick + RSI using Plotly
+                try:
+                    import plotly.graph_objects as go
+                    fig = go.Figure()
+                    fig.add_trace(go.Candlestick(
+                        x=df["open_time"],
+                        open=df["open"],
+                        high=df["high"],
+                        low=df["low"],
+                        close=df["close"],
+                        name="OHLC"
+                    ))
+                    # Compute RSI
+                    df["rsi"] = compute_rsi(df["close"].astype(float))
+                    rsi_fig = go.Figure()
+                    rsi_fig.add_trace(go.Scatter(x=df["open_time"], y=df["rsi"], name="RSI"))
+                    rsi_fig.update_layout(height=200, margin=dict(t=10,b=10,l=40,r=40))
+                    fig.update_layout(title=f"BTC — {timeframe} — source: {source}", xaxis_rangeslider_visible=False, height=600)
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(rsi_fig, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Plotly chart failed: {e}")
+                # CSV download
+                csv_buf = io.StringIO()
+                df.to_csv(csv_buf, index=False)
+                csv_bytes = csv_buf.getvalue().encode()
+                st.download_button("Download CSV", data=csv_bytes, file_name=f"BTC_{timeframe}_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv")
             except Exception as e:
-                st.error(f"Failed to fetch klines: {e}")
-                st.exception(e)
+                st.error(f"Failed to fetch data: {e}")
 
 with col2:
-    st.write("## Notes & Actions")
-    st.write("- If you see `binance-auth` blocked due to location, the app will use public data instead.")
-    st.write("- For real trading (orders), ensure your account & IP are allowed; contact Binance support if needed.")
-    st.write("- Revoke any tokens you shared accidentally (ngrok, API keys).")
-
-st.write("\n---\nThis is a small demo with fallback logic. For production, integrate the fetch_klines_with_fallback into your existing app logic, and ensure you never hardcode secrets.")
-
+    st.header("Notes")
+    st.write(dedent("""
+    - The app tries several exchanges (via ccxt) if `ccxt` is installed.
+    - If exchanges block your IP, the app falls back to CoinGecko (resampled OHLC).
+    - CoinGecko provides tick/prices which are resampled — good for indicators/backtesting but not exchange-exact candles.
+    - If you plan to do live trading, ensure you use an exchange & location permitted by that exchange and do NOT bypass terms using VPN unless allowed.
+    """))
+    if st.button("Revoke example tokens (noop)"):
+        st.info("No tokens stored in this demo.")
